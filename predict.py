@@ -137,19 +137,19 @@ def process_batch(batch, model_path, threshold=0.75):
     if not valid_smiles:
         return pd.DataFrame()
     
-    descs = np.array([calc_morgan_fp(s) for s in valid_smiles])
-    # Ensure the input is 2D with shape (batch_size, FP_SIZE)
-    descs = descs.reshape(-1, FP_SIZE)
-    ort_inputs = {ort_session.get_inputs()[0].name: descs}
-    preds = ort_session.run(None, ort_inputs)
-    
-    formatted_preds = format_preds(preds, [o.name for o in ort_session.get_outputs()])
-    
     new_rows = []
-    for i, idx in enumerate(valid_indices):
-        row = batch.iloc[idx]
-        for target, score in formatted_preds[i * len(ort_session.get_outputs()):(i + 1) * len(ort_session.get_outputs())]:
+    for smiles in valid_smiles:
+        descs = calc_morgan_fp(smiles)
+        # Ensure the input is 1D
+        descs = descs.flatten()
+        ort_inputs = {ort_session.get_inputs()[0].name: descs}
+        preds = ort_session.run(None, ort_inputs)
+        
+        formatted_preds = format_preds(preds, [o.name for o in ort_session.get_outputs()])
+        
+        for target, score in formatted_preds:
             if score > threshold:
+                row = batch.iloc[valid_indices[valid_smiles.index(smiles)]]
                 new_row = row.copy()
                 new_row['target'] = target
                 new_row['score'] = score
