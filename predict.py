@@ -34,13 +34,6 @@ def format_preds(preds, targets):
     np_preds[::-1].sort(order='pred')
     return np_preds
 
-# load the model
-ort_session = onnxruntime.InferenceSession(
-    "trained_models/chembl_34_model/chembl_34_multitask.onnx", 
-    providers=['CPUExecutionProvider']
-)
-
-
 # Connect to the database
 conn = sqlite3.connect('data/chembl_34.db')
 
@@ -63,6 +56,12 @@ compound_records_df = pd.read_sql_query(query, conn)
 print(compound_records_df.head())
 
 '''
+# load the model
+ort_session = onnxruntime.InferenceSession(
+    "trained_models/chembl_34_model/chembl_34_multitask.onnx", 
+    providers=['CPUExecutionProvider']
+)
+
 # calculate the FPs
 smiles = 'CN(C)CCc1c[nH]c2ccc(C[C@H]3COC(=O)N3)cc12'
 descs = calc_morgan_fp(smiles)
@@ -106,6 +105,24 @@ def process_row(row, model_path, threshold=0.75):
     
     return pd.DataFrame(new_rows)
 
+def process_row_wrapper(args):
+    return process_row(*args)
+
+def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=10):
+    if n_processes is None:
+        n_processes = cpu_count()
+    
+    with Pool(n_processes) as pool:
+        total = len(df)
+        results = list(tqdm(
+            pool.imap(process_row_wrapper, [(row, model_path, threshold) for _, row in df.iterrows()]),
+            total=total,
+            desc="Processing compounds",
+            unit="compound"
+        ))
+    
+    return pd.concat(results, ignore_index=True)
+
 def process_batch(batch, model_path, threshold=0.75):
     # Create InferenceSession inside the function
     ort_session = onnxruntime.InferenceSession(
@@ -138,21 +155,18 @@ def process_batch(batch, model_path, threshold=0.75):
     
     return pd.DataFrame(new_rows)
 
-
-def process_row_wrapper(args):
-    return process_row(*args)
-
-def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=10):
+def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=None, batch_size=1000):
     if n_processes is None:
         n_processes = cpu_count()
     
+    batches = [df[i:i+batch_size] for i in range(0, len(df), batch_size)]
+    
     with Pool(n_processes) as pool:
-        total = len(df)
         results = list(tqdm(
-            pool.imap(process_row_wrapper, [(row, model_path, threshold) for _, row in df.iterrows()]),
-            total=total,
-            desc="Processing compounds",
-            unit="compound"
+            pool.starmap(process_batch, [(batch, model_path, threshold) for batch in batches]),
+            total=len(batches),
+            desc="Processing batches",
+            unit="batch"
         ))
     
     return pd.concat(results, ignore_index=True)
@@ -163,9 +177,11 @@ expanded_df = parallel_process_dataframe(
     compound_records_df, 
     model_path,
     threshold=0.75, 
-    n_processes=32
+    n_processes=4,  # Adjust based on your CPU cores
+    batch_size=1000  # Adjust based on your GPU memory
 )
 print(expanded_df)
 
 # Save the expanded dataframe to a CSV file
 expanded_df.to_csv('data/expanded_df.csv', index=False)
+
