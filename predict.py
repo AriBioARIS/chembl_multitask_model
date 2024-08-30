@@ -42,18 +42,15 @@ query = """
         md.molregno,
         md.chembl_id,
         md.pref_name,
-        cr.compound_name,
         cs.canonical_smiles
     FROM 
         molecule_dictionary md
-    LEFT JOIN 
-        compound_records cr ON md.molregno = cr.molregno
     LEFT JOIN
         compound_structures cs ON md.molregno = cs.molregno
     """
 
 compound_records_df = pd.read_sql_query(query, conn)
-print(compound_records_df.head())
+print(compound_records_df)
 
 '''
 # load the model
