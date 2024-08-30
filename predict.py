@@ -177,13 +177,19 @@ def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=None,
     
     with Pool(n_processes) as pool:
         results = list(tqdm(
-            pool.starmap(process_batch, [(batch, model_path, threshold, available_gpus[i % n_gpus]) for i, batch in enumerate(batches)]),
+            pool.imap(process_batch_wrapper, [
+                (batch, model_path, threshold, available_gpus[i % n_gpus])
+                for i, batch in enumerate(batches)
+            ]),
             total=len(batches),
             desc="Processing batches",
             unit="batch"
         ))
     
     return pd.concat(results, ignore_index=True)
+
+def process_batch_wrapper(args):
+    return process_batch(*args)
 
 # Use the function
 model_path = "trained_models/chembl_34_model/chembl_34_multitask.onnx"
