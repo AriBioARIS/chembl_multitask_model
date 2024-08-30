@@ -6,7 +6,7 @@ import sqlite3
 import pandas as pd
 from multiprocessing import Pool, cpu_count
 import multiprocessing.pool as mp
-from tqdm import tqdm
+from tqdm.auto import tqdm
 from rdkit import RDLogger
 import warnings
 
@@ -108,20 +108,23 @@ def process_row(row, model_path, threshold=0.75):
 def process_row_wrapper(args):
     return process_row(*args)
 
-def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=10):
+def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=None, batch_size=1000):
     if n_processes is None:
         n_processes = cpu_count()
     
+    batches = [df[i:i+batch_size] for i in range(0, len(df), batch_size)]
+    
     with Pool(n_processes) as pool:
-        total = len(df)
-        results = list(tqdm(
-            pool.imap(process_row_wrapper, [(row, model_path, threshold) for _, row in df.iterrows()]),
-            total=total,
-            desc="Processing compounds",
-            unit="compound"
-        ))
+        results = []
+        with tqdm(total=len(batches), desc="Processing batches", unit="batch") as pbar:
+            for result in pool.imap(process_batch_wrapper, [(batch, model_path, threshold) for batch in batches]):
+                results.append(result)
+                pbar.update()
     
     return pd.concat(results, ignore_index=True)
+
+def process_batch_wrapper(args):
+    return process_batch(*args)
 
 def process_batch(batch, model_path, threshold=0.75):
     # Create InferenceSession inside the function
@@ -179,8 +182,8 @@ expanded_df = parallel_process_dataframe(
     compound_records_df, 
     model_path,
     threshold=0.75, 
-    n_processes=4,  # Adjust based on your CPU cores
-    batch_size=1000  # Adjust based on your GPU memory
+    n_processes=12,  # Adjust based on your CPU cores
+    batch_size=2000  # Adjust based on your GPU memory
 )
 print(expanded_df)
 
