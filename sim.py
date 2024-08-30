@@ -94,7 +94,7 @@ if __name__ == "__main__":
         compound_records_df,
         molregno_to_chembl,
         n_gpus=4,  # Use all 4 GPUs
-        processes_per_gpu=4,  # Run 2 processes per GPU
+        processes_per_gpu=8,  # Run 2 processes per GPU
         batch_size=1000  # Adjust as needed
     )
 
