@@ -4,10 +4,11 @@ import wget
 import sqlite3
 import pandas as pd
 from tqdm.auto import tqdm
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import threading
 from rdkit import RDLogger
 import warnings
+import cupy as cp
 
 # Suppress RDKit warnings
 RDLogger.DisableLog('rdApp.*')
@@ -57,7 +58,10 @@ print(compound_records_df)
 molregno_to_chembl = dict(zip(compound_records_df['molregno'], compound_records_df['chembl_id']))
 
 def process_batch(batch_data):
-    batch, engine, molregno_to_chembl = batch_data
+    batch, engine, molregno_to_chembl, gpu_id = batch_data
+    
+    # Set the GPU device for this process
+    cp.cuda.Device(gpu_id).use()
     
     results = []
     for _, row in batch.iterrows():
@@ -71,31 +75,31 @@ def process_batch(batch_data):
     
     return results
 
-def parallel_process_dataframe(df, engine, molregno_to_chembl, n_threads=None, batch_size=1000):
-    if n_threads is None:
-        n_threads = threading.active_count() * 2  # Use twice the number of CPU cores
-    
+def parallel_process_dataframe(df, engines, molregno_to_chembl, n_gpus=4, batch_size=1000):
     batches = [df[i:i+batch_size] for i in range(0, len(df), batch_size)]
     
     batch_data = [
-        (batch, engine, molregno_to_chembl)
-        for batch in batches
+        (batch, engines[i % n_gpus], molregno_to_chembl, i % n_gpus)
+        for i, batch in enumerate(batches)
     ]
     
     results = []
-    with ThreadPoolExecutor(max_workers=n_threads) as executor:
+    with ProcessPoolExecutor(max_workers=n_gpus) as executor:
         futures = [executor.submit(process_batch, data) for data in batch_data]
         for future in tqdm(futures, total=len(batches), desc="Processing batches", unit="batch"):
             results.extend(future.result())
     
     return results
 
+# Initialize engines for each GPU
+engines = [FPSim2CudaEngine("data/chembl.h5", gpu_id=i) for i in range(4)]
+
 # Use the function
 similar_compounds = parallel_process_dataframe(
     compound_records_df,
-    engine,
+    engines,
     molregno_to_chembl,
-    n_threads=6,  # Adjust based on your CPU cores
+    n_gpus=4,  # Use all 4 GPUs
     batch_size=1000  # Adjust as needed
 )
 
