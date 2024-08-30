@@ -72,8 +72,8 @@ print(preds)
 def process_row(row, model_path, threshold=0.75):
     # Create InferenceSession inside the function
     ort_session = onnxruntime.InferenceSession(
-        model_path, 
-        providers=['CPUExecutionProvider']
+        model_path,
+        providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
     )
     
     smiles = row['canonical_smiles']
@@ -99,9 +99,43 @@ def process_row(row, model_path, threshold=0.75):
     
     return pd.DataFrame(new_rows)
 
+def process_batch(batch, model_path, threshold=0.75):
+    # Create InferenceSession inside the function
+    ort_session = onnxruntime.InferenceSession(
+        model_path, 
+        providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+    )
+    
+    smiles_list = batch['canonical_smiles'].tolist()
+    valid_indices = [i for i, s in enumerate(smiles_list) if pd.notna(s)]
+    valid_smiles = [smiles_list[i] for i in valid_indices]
+    
+    if not valid_smiles:
+        return pd.DataFrame()
+    
+    descs = np.array([calc_morgan_fp(s) for s in valid_smiles])
+    ort_inputs = {ort_session.get_inputs()[0].name: descs}
+    preds = ort_session.run(None, ort_inputs)
+    
+    formatted_preds = format_preds(preds, [o.name for o in ort_session.get_outputs()])
+    
+    new_rows = []
+    for i, idx in enumerate(valid_indices):
+        row = batch.iloc[idx]
+        for target, score in formatted_preds[i * len(ort_session.get_outputs()):(i + 1) * len(ort_session.get_outputs())]:
+            if score > threshold:
+                new_row = row.copy()
+                new_row['target'] = target
+                new_row['score'] = score
+                new_rows.append(new_row)
+    
+    return pd.DataFrame(new_rows)
+
+
 def process_row_wrapper(args):
     return process_row(*args)
 
+'''
 def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=10):
     if n_processes is None:
         n_processes = cpu_count()
@@ -116,6 +150,22 @@ def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=10):
         ))
     
     return pd.concat(results, ignore_index=True)
+'''
+def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=None, batch_size=1000):
+    if n_processes is None:
+        n_processes = cpu_count()
+    
+    batches = [df[i:i+batch_size] for i in range(0, len(df), batch_size)]
+    
+    with Pool(n_processes) as pool:
+        results = list(tqdm(
+            pool.starmap(process_batch, [(batch, model_path, threshold) for batch in batches]),
+            total=len(batches),
+            desc="Processing batches",
+            unit="batch"
+        ))
+    
+    return pd.concat(results, ignore_index=True)
 
 # Use the function
 model_path = "trained_models/chembl_34_model/chembl_34_multitask.onnx"
@@ -123,7 +173,8 @@ expanded_df = parallel_process_dataframe(
     compound_records_df, 
     model_path,
     threshold=0.75, 
-    n_processes=48
+    n_processes=4,  # Adjust based on your CPU cores
+    batch_size=1000  # Adjust based on your GPU memory
 )
 print(expanded_df)
 
