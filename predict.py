@@ -10,6 +10,8 @@ from tqdm.auto import tqdm
 from rdkit import RDLogger
 import warnings
 import torch
+import pickle
+import os
 
 FP_SIZE = 1024
 RADIUS = 2
@@ -33,7 +35,13 @@ def format_preds(preds, targets):
     np_preds[::-1].sort(order='pred')
     return np_preds
 
-def precompute_fingerprints(df):
+def precompute_fingerprints(df, cache_file='data/fingerprints_cache.pkl'):
+    if os.path.exists(cache_file):
+        print("Loading precomputed fingerprints from cache...")
+        with open(cache_file, 'rb') as f:
+            return pickle.load(f)
+    
+    print("Computing fingerprints...")
     fingerprints = []
     valid_indices = []
     for idx, row in tqdm(df.iterrows(), total=len(df), desc="Precomputing fingerprints"):
@@ -45,7 +53,14 @@ def precompute_fingerprints(df):
                 valid_indices.append(idx)
             except:
                 pass
+    
+    # Save the computed fingerprints
+    print("Saving fingerprints to cache...")
+    with open(cache_file, 'wb') as f:
+        pickle.dump((fingerprints, valid_indices), f)
+    
     return fingerprints, valid_indices
+
 # Connect to the database
 conn = sqlite3.connect('data/chembl_34.db')
 
@@ -212,6 +227,5 @@ print(expanded_df)
 
 # Save the expanded dataframe to a CSV file
 expanded_df.to_csv('data/expanded_df.csv', index=False)
-# Save the expanded dataframe to a CSV file
-expanded_df.to_csv('data/expanded_df.csv', index=False)
+
 
