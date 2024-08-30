@@ -93,7 +93,7 @@ if __name__ == "__main__":
         compound_records_df,
         molregno_to_chembl,
         n_gpus=4,  # Use all 4 GPUs
-        batch_size=1000  # Adjust as needed
+        batch_size=10000  # Adjust as needed
     )
 
     similar_compounds_df = pd.DataFrame(similar_compounds)
