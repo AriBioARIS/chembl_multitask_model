@@ -5,10 +5,8 @@ import sqlite3
 import pandas as pd
 from tqdm.auto import tqdm
 from concurrent.futures import ProcessPoolExecutor
-import warnings
-import cupy as cp
 from rdkit import RDLogger
-
+import warnings
 
 # Suppress RDKit warnings
 RDLogger.DisableLog('rdApp.*')
@@ -16,15 +14,10 @@ RDLogger.DisableLog('rdApp.*')
 # Suppress deprecation warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-
 if not os.path.exists('data/chembl.h5'):
     # Download the file if it doesn't exist
     url = 'https://ftp.ebi.ac.uk/pub/databases/chembl/ChEMBLdb/latest/chembl_34.h5'
     wget.download(url, out='data/chembl.h5')
-    
-engine = FPSim2CudaEngine(
-    "data/chembl.h5",
-)
 
 def get_similar_compounds(canonical_smiles, engine):
     if pd.isna(canonical_smiles):
@@ -35,27 +28,6 @@ def get_similar_compounds(canonical_smiles, engine):
     except Exception as e:
         print(f"Error processing SMILES: {canonical_smiles}. Error: {str(e)}")
         return []
-
-# Connect to the database
-conn = sqlite3.connect('data/chembl_34.db')
-
-query = """
-    SELECT 
-        md.molregno,
-        md.chembl_id,
-        md.pref_name,
-        cs.canonical_smiles
-    FROM 
-        molecule_dictionary md
-    LEFT JOIN
-        compound_structures cs ON md.molregno = cs.molregno
-    """
-
-compound_records_df = pd.read_sql_query(query, conn)
-print(compound_records_df)
-
-# Create a dictionary to map molregno to chembl_id
-molregno_to_chembl = dict(zip(compound_records_df['molregno'], compound_records_df['chembl_id']))
 
 def process_batch(batch_data):
     batch, molregno_to_chembl, gpu_id = batch_data
@@ -94,16 +66,38 @@ def parallel_process_dataframe(df, molregno_to_chembl, n_gpus=4, batch_size=1000
     
     return results
 
-# Use the function
-similar_compounds = parallel_process_dataframe(
-    compound_records_df,
-    molregno_to_chembl,
-    n_gpus=4,  # Use all 4 GPUs
-    batch_size=1000  # Adjust as needed
-)
+if __name__ == "__main__":
+    # Connect to the database
+    conn = sqlite3.connect('data/chembl_34.db')
 
-similar_compounds_df = pd.DataFrame(similar_compounds)
-print(similar_compounds_df)
+    query = """
+        SELECT 
+            md.molregno,
+            md.chembl_id,
+            md.pref_name,
+            cs.canonical_smiles
+        FROM 
+            molecule_dictionary md
+        LEFT JOIN
+            compound_structures cs ON md.molregno = cs.molregno
+        """
 
-# Optionally, save the results to a CSV file
-similar_compounds_df.to_csv('similar_compounds.csv', index=False)
+    compound_records_df = pd.read_sql_query(query, conn)
+    print(compound_records_df)
+
+    # Create a dictionary to map molregno to chembl_id
+    molregno_to_chembl = dict(zip(compound_records_df['molregno'], compound_records_df['chembl_id']))
+
+    # Use the function
+    similar_compounds = parallel_process_dataframe(
+        compound_records_df,
+        molregno_to_chembl,
+        n_gpus=4,  # Use all 4 GPUs
+        batch_size=1000  # Adjust as needed
+    )
+
+    similar_compounds_df = pd.DataFrame(similar_compounds)
+    print(similar_compounds_df)
+
+    # Optionally, save the results to a CSV file
+    similar_compounds_df.to_csv('similar_compounds.csv', index=False)
