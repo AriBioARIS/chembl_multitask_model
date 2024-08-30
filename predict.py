@@ -33,6 +33,19 @@ def format_preds(preds, targets):
     np_preds[::-1].sort(order='pred')
     return np_preds
 
+def precompute_fingerprints(df):
+    fingerprints = []
+    valid_indices = []
+    for idx, row in tqdm(df.iterrows(), total=len(df), desc="Precomputing fingerprints"):
+        smiles = row['canonical_smiles']
+        if pd.notna(smiles):
+            try:
+                fp = calc_morgan_fp(smiles)
+                fingerprints.append(fp)
+                valid_indices.append(idx)
+            except:
+                pass
+    return fingerprints, valid_indices
 # Connect to the database
 conn = sqlite3.connect('data/chembl_34.db')
 
@@ -127,7 +140,7 @@ def get_available_gpus():
     return list(range(torch.cuda.device_count()))
 
 def process_batch(batch_data):
-    batch, model_path, threshold, gpu_id = batch_data
+    batch_fps, batch_indices, model_path, threshold, gpu_id = batch_data
     
     # Set the CUDA device
     torch.cuda.set_device(gpu_id)
@@ -140,39 +153,33 @@ def process_batch(batch_data):
     )
     
     new_rows = []
-    for _, row in batch.iterrows():
-        smiles = row['canonical_smiles']
-        if pd.isna(smiles):
-            continue
-        
-        descs = calc_morgan_fp(smiles)
-        descs = np.array(descs, dtype=np.float32)
-        ort_inputs = {ort_session.get_inputs()[0].name: descs}
+    for fp, idx in zip(batch_fps, batch_indices):
+        ort_inputs = {ort_session.get_inputs()[0].name: np.array(fp, dtype=np.float32)}
         preds = ort_session.run(None, ort_inputs)
         
         formatted_preds = format_preds(preds, [o.name for o in ort_session.get_outputs()])
         
         for target, score in formatted_preds:
             if score > threshold:
-                new_row = row.copy()
+                new_row = compound_records_df.loc[idx].copy()
                 new_row['target'] = target
                 new_row['score'] = score
                 new_rows.append(new_row)
     
     return pd.DataFrame(new_rows)
 
-def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=None, batch_size=1000):
+def parallel_process_dataframe(fingerprints, valid_indices, model_path, threshold=0.75, n_processes=None, batch_size=1000):
     if n_processes is None:
         n_processes = cpu_count()
     
-    batches = [df[i:i+batch_size] for i in range(0, len(df), batch_size)]
+    batches = [(fingerprints[i:i+batch_size], valid_indices[i:i+batch_size]) for i in range(0, len(fingerprints), batch_size)]
     
     available_gpus = get_available_gpus()
     n_gpus = len(available_gpus)
     
     batch_data = [
-        (batch, model_path, threshold, available_gpus[i % n_gpus])
-        for i, batch in enumerate(batches)
+        (batch_fps, batch_indices, model_path, threshold, available_gpus[i % n_gpus])
+        for i, (batch_fps, batch_indices) in enumerate(batches)
     ]
     
     with Pool(n_processes) as pool:
@@ -189,10 +196,13 @@ def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=None,
 def process_batch_wrapper(args):
     return process_batch(*args)
 
+fingerprints, valid_indices = precompute_fingerprints(compound_records_df)
+
 # Use the function
 model_path = "trained_models/chembl_34_model/chembl_34_multitask.onnx"
 expanded_df = parallel_process_dataframe(
-    compound_records_df, 
+    fingerprints,
+    valid_indices,
     model_path,
     threshold=0.75, 
     n_processes=48,  # Adjust based on your CPU cores
@@ -200,6 +210,8 @@ expanded_df = parallel_process_dataframe(
 )
 print(expanded_df)
 
+# Save the expanded dataframe to a CSV file
+expanded_df.to_csv('data/expanded_df.csv', index=False)
 # Save the expanded dataframe to a CSV file
 expanded_df.to_csv('data/expanded_df.csv', index=False)
 
