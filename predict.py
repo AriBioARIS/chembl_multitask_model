@@ -125,6 +125,9 @@ def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=None,
     
     return pd.concat(results, ignore_index=True)
 
+def get_available_gpus():
+    return list(range(torch.cuda.device_count()))
+
 def process_batch(batch, model_path, threshold=0.75, gpu_id=0):
     # Set the CUDA device
     torch.cuda.set_device(gpu_id)
@@ -133,7 +136,7 @@ def process_batch(batch, model_path, threshold=0.75, gpu_id=0):
     ort_session = onnxruntime.InferenceSession(
         model_path, 
         providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
-        provider_options=[{'device_id': str(gpu_id)}]
+        provider_options=[{'device_id': str(gpu_id)}, {}]
     )
     
     smiles_list = batch['canonical_smiles'].tolist()
@@ -144,7 +147,7 @@ def process_batch(batch, model_path, threshold=0.75, gpu_id=0):
         return pd.DataFrame()
     
     new_rows = []
-    for smiles in tqdm(valid_smiles, desc="Processing SMILES"):
+    for smiles in tqdm(valid_smiles, desc=f"Processing SMILES (GPU {gpu_id})", leave=False):
         descs = calc_morgan_fp(smiles)
         # Ensure the input is 1D
         descs = descs.flatten()
@@ -163,8 +166,24 @@ def process_batch(batch, model_path, threshold=0.75, gpu_id=0):
     
     return pd.DataFrame(new_rows)
 
-def get_available_gpus():
-    return list(range(torch.cuda.device_count()))
+def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=None, batch_size=1000):
+    if n_processes is None:
+        n_processes = cpu_count()
+    
+    batches = [df[i:i+batch_size] for i in range(0, len(df), batch_size)]
+    
+    available_gpus = get_available_gpus()
+    n_gpus = len(available_gpus)
+    
+    with Pool(n_processes) as pool:
+        results = list(tqdm(
+            pool.starmap(process_batch, [(batch, model_path, threshold, available_gpus[i % n_gpus]) for i, batch in enumerate(batches)]),
+            total=len(batches),
+            desc="Processing batches",
+            unit="batch"
+        ))
+    
+    return pd.concat(results, ignore_index=True)
 
 # Use the function
 model_path = "trained_models/chembl_34_model/chembl_34_multitask.onnx"
