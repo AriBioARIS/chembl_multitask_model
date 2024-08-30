@@ -50,7 +50,7 @@ def process_batch(batch_data):
     
     return results
 
-def parallel_process_dataframe(df, molregno_to_chembl, n_gpus=4, batch_size=1000):
+def parallel_process_dataframe(df, molregno_to_chembl, n_gpus=4, processes_per_gpu=2, batch_size=1000):
     batches = [df[i:i+batch_size] for i in range(0, len(df), batch_size)]
     
     batch_data = [
@@ -58,8 +58,9 @@ def parallel_process_dataframe(df, molregno_to_chembl, n_gpus=4, batch_size=1000
         for i, batch in enumerate(batches)
     ]
     
+    total_processes = n_gpus * processes_per_gpu
     results = []
-    with ProcessPoolExecutor(max_workers=n_gpus) as executor:
+    with ProcessPoolExecutor(max_workers=total_processes) as executor:
         futures = [executor.submit(process_batch, data) for data in batch_data]
         for future in tqdm(futures, total=len(batches), desc="Processing batches", unit="batch"):
             results.extend(future.result())
@@ -93,7 +94,8 @@ if __name__ == "__main__":
         compound_records_df,
         molregno_to_chembl,
         n_gpus=4,  # Use all 4 GPUs
-        batch_size=10000  # Adjust as needed
+        processes_per_gpu=4,  # Run 2 processes per GPU
+        batch_size=1000  # Adjust as needed
     )
 
     similar_compounds_df = pd.DataFrame(similar_compounds)
