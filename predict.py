@@ -9,6 +9,7 @@ import multiprocessing.pool as mp
 from tqdm.auto import tqdm
 from rdkit import RDLogger
 import warnings
+import torch
 
 FP_SIZE = 1024
 RADIUS = 2
@@ -111,23 +112,28 @@ def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=None,
     
     batches = [df[i:i+batch_size] for i in range(0, len(df), batch_size)]
     
+    available_gpus = get_available_gpus()
+    n_gpus = len(available_gpus)
+    
     with Pool(n_processes) as pool:
-        results = []
-        with tqdm(total=len(batches), desc="Processing batches", unit="batch") as pbar:
-            for result in pool.imap(process_batch_wrapper, [(batch, model_path, threshold) for batch in batches]):
-                results.append(result)
-                pbar.update()
+        results = list(tqdm(
+            pool.starmap(process_batch, [(batch, model_path, threshold, available_gpus[i % n_gpus]) for i, batch in enumerate(batches)]),
+            total=len(batches),
+            desc="Processing batches",
+            unit="batch"
+        ))
     
     return pd.concat(results, ignore_index=True)
 
-def process_batch_wrapper(args):
-    return process_batch(*args)
-
-def process_batch(batch, model_path, threshold=0.75):
+def process_batch(batch, model_path, threshold=0.75, gpu_id=0):
+    # Set the CUDA device
+    torch.cuda.set_device(gpu_id)
+    
     # Create InferenceSession inside the function
     ort_session = onnxruntime.InferenceSession(
         model_path, 
-        providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+        providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
+        provider_options=[{'device_id': str(gpu_id)}]
     )
     
     smiles_list = batch['canonical_smiles'].tolist()
@@ -157,21 +163,8 @@ def process_batch(batch, model_path, threshold=0.75):
     
     return pd.DataFrame(new_rows)
 
-def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=None, batch_size=1000):
-    if n_processes is None:
-        n_processes = cpu_count()
-    
-    batches = [df[i:i+batch_size] for i in range(0, len(df), batch_size)]
-    
-    with Pool(n_processes) as pool:
-        results = list(tqdm(
-            pool.starmap(process_batch, [(batch, model_path, threshold) for batch in batches]),
-            total=len(batches),
-            desc="Processing batches",
-            unit="batch"
-        ))
-    
-    return pd.concat(results, ignore_index=True)
+def get_available_gpus():
+    return list(range(torch.cuda.device_count()))
 
 # Use the function
 model_path = "trained_models/chembl_34_model/chembl_34_multitask.onnx"
