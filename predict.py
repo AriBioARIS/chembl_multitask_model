@@ -4,7 +4,8 @@ from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
 import sqlite3
 import pandas as pd
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import Pool, cpu_count
+import multiprocessing.pool as mp
 from tqdm.auto import tqdm
 from rdkit import RDLogger
 import warnings
@@ -22,9 +23,7 @@ def calc_morgan_fp(smiles):
     mol = Chem.MolFromSmiles(smiles)
     fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(
         mol, RADIUS, nBits=FP_SIZE)
-    a = np.zeros((0,), dtype=np.float32)
-    Chem.DataStructs.ConvertToNumpyArray(fp, a)
-    return a
+    return list(fp.ToBitString())
 
 def format_preds(preds, targets):
     preds = np.concatenate(preds).ravel()
@@ -72,51 +71,123 @@ preds = format_preds(preds, [o.name for o in ort_session.get_outputs()])
 print(preds)
 '''
 
-def process_chunk(chunk, model_path, threshold=0.75):
+def process_row(row, model_path, threshold=0.75):
     # Create InferenceSession inside the function
     ort_session = onnxruntime.InferenceSession(
         model_path,
         providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
     )
     
+    smiles = row['canonical_smiles']
+    if pd.isna(smiles):
+        return pd.DataFrame()  # Return empty DataFrame if SMILES is NaN
+    
+    descs = calc_morgan_fp(smiles)
+    # Ensure the input is 1D
+    descs = descs.flatten()
+    ort_inputs = {ort_session.get_inputs()[0].name: descs}
+    preds = ort_session.run(None, ort_inputs)
+    
+    formatted_preds = format_preds(preds, [o.name for o in ort_session.get_outputs()])
+    
+    # Filter predictions above threshold and create new rows
     new_rows = []
-    for _, row in chunk.iterrows():
+    for target, score in formatted_preds:
+        if score > threshold:
+            new_row = row.copy()
+            new_row['target'] = target
+            new_row['score'] = score
+            new_rows.append(new_row)
+    
+    return pd.DataFrame(new_rows)
+
+def process_row_wrapper(args):
+    return process_row(*args)
+
+def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=None, batch_size=1000):
+    if n_processes is None:
+        n_processes = cpu_count()
+    
+    batches = [df[i:i+batch_size] for i in range(0, len(df), batch_size)]
+    
+    available_gpus = get_available_gpus()
+    n_gpus = len(available_gpus)
+    
+    with Pool(n_processes) as pool:
+        results = list(tqdm(
+            pool.starmap(process_batch, [(batch, model_path, threshold, available_gpus[i % n_gpus]) for i, batch in enumerate(batches)]),
+            total=len(batches),
+            desc="Processing batches",
+            unit="batch"
+        ))
+    
+    return pd.concat(results, ignore_index=True)
+
+def get_available_gpus():
+    return list(range(torch.cuda.device_count()))
+
+def process_batch(batch_data):
+    batch, model_path, threshold, gpu_id = batch_data
+    
+    # Set the CUDA device
+    torch.cuda.set_device(gpu_id)
+    
+    # Create InferenceSession inside the function
+    ort_session = onnxruntime.InferenceSession(
+        model_path, 
+        providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
+        provider_options=[{'device_id': str(gpu_id)}, {}]
+    )
+    
+    new_rows = []
+    for _, row in batch.iterrows():
         smiles = row['canonical_smiles']
         if pd.isna(smiles):
             continue
         
-        try:
-            descs = calc_morgan_fp(smiles)
-            descs = descs.flatten()
-            ort_inputs = {ort_session.get_inputs()[0].name: descs}
-            preds = ort_session.run(None, ort_inputs)
-            
-            formatted_preds = format_preds(preds, [o.name for o in ort_session.get_outputs()])
-            
-            for target, score in formatted_preds:
-                if score > threshold:
-                    new_row = row.copy()
-                    new_row['target'] = target
-                    new_row['score'] = score
-                    new_rows.append(new_row)
-        except Exception as e:
-            print(f"Error processing SMILES {smiles}: {str(e)}")
+        descs = calc_morgan_fp(smiles)
+        descs = np.array(descs, dtype=np.float32)
+        ort_inputs = {ort_session.get_inputs()[0].name: descs}
+        preds = ort_session.run(None, ort_inputs)
+        
+        formatted_preds = format_preds(preds, [o.name for o in ort_session.get_outputs()])
+        
+        for target, score in formatted_preds:
+            if score > threshold:
+                new_row = row.copy()
+                new_row['target'] = target
+                new_row['score'] = score
+                new_rows.append(new_row)
     
     return pd.DataFrame(new_rows)
 
-def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=None, chunk_size=1000):
+def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=None, batch_size=1000):
     if n_processes is None:
-        n_processes = 48
+        n_processes = cpu_count()
     
-    chunks = [df[i:i+chunk_size] for i in range(0, len(df), chunk_size)]
+    batches = [df[i:i+batch_size] for i in range(0, len(df), batch_size)]
     
-    results = []
-    with ProcessPoolExecutor(max_workers=n_processes) as executor:
-        futures = [executor.submit(process_chunk, chunk, model_path, threshold) for chunk in chunks]
-        for future in tqdm(as_completed(futures), total=len(chunks), desc="Processing chunks"):
-            results.append(future.result())
+    available_gpus = get_available_gpus()
+    n_gpus = len(available_gpus)
+    
+    batch_data = [
+        (batch, model_path, threshold, available_gpus[i % n_gpus])
+        for i, batch in enumerate(batches)
+    ]
+    
+    with Pool(n_processes) as pool:
+        results = list(tqdm(
+            pool.imap(process_batch, batch_data),
+            total=len(batches),
+            desc="Processing batches",
+            unit="batch"
+        ))
     
     return pd.concat(results, ignore_index=True)
+
+
+def process_batch_wrapper(args):
+    return process_batch(*args)
 
 # Use the function
 model_path = "trained_models/chembl_34_model/chembl_34_multitask.onnx"
@@ -124,8 +195,8 @@ expanded_df = parallel_process_dataframe(
     compound_records_df, 
     model_path,
     threshold=0.75, 
-    n_processes=32,  # Adjust based on your CPU cores
-    chunk_size=2000  # Adjust based on your system's memory
+    n_processes=48,  # Adjust based on your CPU cores
+    batch_size=2000  # Adjust based on your GPU memory
 )
 print(expanded_df)
 
