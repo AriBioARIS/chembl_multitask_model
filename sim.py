@@ -4,9 +4,7 @@ import wget
 import sqlite3
 import pandas as pd
 from tqdm.auto import tqdm
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-import threading
-from rdkit import RDLogger
+from concurrent.futures import ProcessPoolExecutor
 import warnings
 import cupy as cp
 
@@ -58,10 +56,13 @@ print(compound_records_df)
 molregno_to_chembl = dict(zip(compound_records_df['molregno'], compound_records_df['chembl_id']))
 
 def process_batch(batch_data):
-    batch, engine, molregno_to_chembl, gpu_id = batch_data
+    batch, molregno_to_chembl, gpu_id = batch_data
     
     # Set the GPU device for this process
-    cp.cuda.Device(gpu_id).use()
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+    
+    # Initialize the engine within the process
+    engine = FPSim2CudaEngine("data/chembl.h5")
     
     results = []
     for _, row in batch.iterrows():
@@ -75,11 +76,11 @@ def process_batch(batch_data):
     
     return results
 
-def parallel_process_dataframe(df, engines, molregno_to_chembl, n_gpus=4, batch_size=1000):
+def parallel_process_dataframe(df, molregno_to_chembl, n_gpus=4, batch_size=1000):
     batches = [df[i:i+batch_size] for i in range(0, len(df), batch_size)]
     
     batch_data = [
-        (batch, engines[i % n_gpus], molregno_to_chembl, i % n_gpus)
+        (batch, molregno_to_chembl, i % n_gpus)
         for i, batch in enumerate(batches)
     ]
     
@@ -91,13 +92,9 @@ def parallel_process_dataframe(df, engines, molregno_to_chembl, n_gpus=4, batch_
     
     return results
 
-# Initialize engines for each GPU
-engines = [FPSim2CudaEngine("data/chembl.h5", gpu_id=i) for i in range(4)]
-
 # Use the function
 similar_compounds = parallel_process_dataframe(
     compound_records_df,
-    engines,
     molregno_to_chembl,
     n_gpus=4,  # Use all 4 GPUs
     batch_size=1000  # Adjust as needed
