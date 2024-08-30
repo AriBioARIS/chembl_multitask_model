@@ -10,6 +10,7 @@ from tqdm.auto import tqdm
 from rdkit import RDLogger
 import warnings
 import torch
+from torch.nn.parallel import DataParallel
 
 FP_SIZE = 1024
 RADIUS = 2
@@ -146,19 +147,25 @@ def process_batch(batch, model_path, threshold=0.75, gpu_id=0):
     if not valid_smiles:
         return pd.DataFrame()
     
+    # Process SMILES in batches
+    batch_size = 128  # Adjust this value based on your GPU memory
     new_rows = []
-    for smiles in tqdm(valid_smiles, desc=f"Processing SMILES (GPU {gpu_id})", leave=False):
-        descs = calc_morgan_fp(smiles)
-        # Ensure the input is 1D
-        descs = descs.flatten()
-        ort_inputs = {ort_session.get_inputs()[0].name: descs}
-        preds = ort_session.run(None, ort_inputs)
+    
+    for i in tqdm(range(0, len(valid_smiles), batch_size), desc=f"Processing SMILES batches (GPU {gpu_id})", leave=False):
+        batch_smiles = valid_smiles[i:i+batch_size]
+        batch_descs = np.array([calc_morgan_fp(smiles) for smiles in batch_smiles])
         
-        formatted_preds = format_preds(preds, [o.name for o in ort_session.get_outputs()])
+        # Ensure the input is 2D (batch_size, FP_SIZE)
+        batch_descs = batch_descs.reshape(-1, FP_SIZE)
         
-        for target, score in formatted_preds:
+        ort_inputs = {ort_session.get_inputs()[0].name: batch_descs}
+        batch_preds = ort_session.run(None, ort_inputs)
+        
+        formatted_preds = format_preds(batch_preds, [o.name for o in ort_session.get_outputs()])
+        
+        for j, (target, score) in enumerate(formatted_preds):
             if score > threshold:
-                row = batch.iloc[valid_indices[valid_smiles.index(smiles)]]
+                row = batch.iloc[valid_indices[i + j]]
                 new_row = row.copy()
                 new_row['target'] = target
                 new_row['score'] = score
