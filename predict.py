@@ -1,23 +1,29 @@
 import onnxruntime
 import numpy as np
 from rdkit import Chem
-from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import AllChem
 import sqlite3
 import pandas as pd
 from multiprocessing import Pool, cpu_count
 import multiprocessing.pool as mp
 from tqdm import tqdm
+import warnings
+from rdkit import RDLogger
+
+# Suppress RDKit warnings
+RDLogger.DisableLog('rdApp.*')
+
+# Suppress deprecation warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 FP_SIZE = 1024
 RADIUS = 2
 
 def calc_morgan_fp(smiles):
     mol = Chem.MolFromSmiles(smiles)
-    fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(
+    fp = AllChem.GetMorganFingerprintAsBitVect(
         mol, RADIUS, nBits=FP_SIZE)
-    a = np.zeros((0,), dtype=np.float32)
-    Chem.DataStructs.ConvertToNumpyArray(fp, a)
-    return a
+    return np.array(fp, dtype=np.float32)
 
 def format_preds(preds, targets):
     preds = np.concatenate(preds).ravel()
@@ -114,6 +120,8 @@ def process_batch(batch, model_path, threshold=0.75):
         return pd.DataFrame()
     
     descs = np.array([calc_morgan_fp(s) for s in valid_smiles])
+    # Ensure the input is 2D
+    descs = descs.reshape(descs.shape[0], -1)
     ort_inputs = {ort_session.get_inputs()[0].name: descs}
     preds = ort_session.run(None, ort_inputs)
     
