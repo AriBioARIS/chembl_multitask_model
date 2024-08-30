@@ -197,7 +197,7 @@ expanded_df = parallel_process_dataframe(
     compound_records_df, 
     model_path,
     threshold=0.75, 
-    n_processes=32,  # Adjust based on your CPU cores
+    n_processes=48,  # Adjust based on your CPU cores
     batch_size=2000  # Adjust based on your GPU memory
 )
 print(expanded_df)
