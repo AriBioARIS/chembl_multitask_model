@@ -1,29 +1,30 @@
 import onnxruntime
 import numpy as np
 from rdkit import Chem
-from rdkit.Chem import AllChem
+from rdkit.Chem import rdMolDescriptors
 import sqlite3
 import pandas as pd
 from multiprocessing import Pool, cpu_count
 import multiprocessing.pool as mp
 from tqdm import tqdm
-import warnings
 from rdkit import RDLogger
+import warnings
 
+FP_SIZE = 1024
+RADIUS = 2
 # Suppress RDKit warnings
 RDLogger.DisableLog('rdApp.*')
 
 # Suppress deprecation warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-FP_SIZE = 1024
-RADIUS = 2
-
 def calc_morgan_fp(smiles):
     mol = Chem.MolFromSmiles(smiles)
-    fp = AllChem.GetMorganFingerprintAsBitVect(
+    fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(
         mol, RADIUS, nBits=FP_SIZE)
-    return np.array(fp, dtype=np.float32)
+    a = np.zeros((0,), dtype=np.float32)
+    Chem.DataStructs.ConvertToNumpyArray(fp, a)
+    return a
 
 def format_preds(preds, targets):
     preds = np.concatenate(preds).ravel()
@@ -120,8 +121,6 @@ def process_batch(batch, model_path, threshold=0.75):
         return pd.DataFrame()
     
     descs = np.array([calc_morgan_fp(s) for s in valid_smiles])
-    # Ensure the input is 2D
-    descs = descs.reshape(descs.shape[0], -1)
     ort_inputs = {ort_session.get_inputs()[0].name: descs}
     preds = ort_session.run(None, ort_inputs)
     
@@ -143,7 +142,6 @@ def process_batch(batch, model_path, threshold=0.75):
 def process_row_wrapper(args):
     return process_row(*args)
 
-'''
 def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=10):
     if n_processes is None:
         n_processes = cpu_count()
@@ -158,22 +156,6 @@ def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=10):
         ))
     
     return pd.concat(results, ignore_index=True)
-'''
-def parallel_process_dataframe(df, model_path, threshold=0.75, n_processes=None, batch_size=1000):
-    if n_processes is None:
-        n_processes = cpu_count()
-    
-    batches = [df[i:i+batch_size] for i in range(0, len(df), batch_size)]
-    
-    with Pool(n_processes) as pool:
-        results = list(tqdm(
-            pool.starmap(process_batch, [(batch, model_path, threshold) for batch in batches]),
-            total=len(batches),
-            desc="Processing batches",
-            unit="batch"
-        ))
-    
-    return pd.concat(results, ignore_index=True)
 
 # Use the function
 model_path = "trained_models/chembl_34_model/chembl_34_multitask.onnx"
@@ -181,8 +163,7 @@ expanded_df = parallel_process_dataframe(
     compound_records_df, 
     model_path,
     threshold=0.75, 
-    n_processes=4,  # Adjust based on your CPU cores
-    batch_size=1000  # Adjust based on your GPU memory
+    n_processes=32
 )
 print(expanded_df)
 
