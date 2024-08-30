@@ -141,7 +141,7 @@ def process_batch(batch, model_path, threshold=0.75):
         return pd.DataFrame()
     
     new_rows = []
-    for smiles in valid_smiles:
+    for smiles in tqdm(valid_smiles, desc="Processing SMILES"):
         descs = calc_morgan_fp(smiles)
         # Ensure the input is 1D
         descs = descs.flatten()
