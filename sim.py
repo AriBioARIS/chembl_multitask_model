@@ -7,6 +7,8 @@ from tqdm.auto import tqdm
 from concurrent.futures import ProcessPoolExecutor
 import warnings
 import cupy as cp
+from rdkit import RDLogger
+
 
 # Suppress RDKit warnings
 RDLogger.DisableLog('rdApp.*')
