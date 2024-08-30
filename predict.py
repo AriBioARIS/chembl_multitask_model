@@ -138,6 +138,8 @@ def process_batch(batch, model_path, threshold=0.75):
         return pd.DataFrame()
     
     descs = np.array([calc_morgan_fp(s) for s in valid_smiles])
+    # Ensure the input is 2D with shape (batch_size, FP_SIZE)
+    descs = descs.reshape(-1, FP_SIZE)
     ort_inputs = {ort_session.get_inputs()[0].name: descs}
     preds = ort_session.run(None, ort_inputs)
     
