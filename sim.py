@@ -1,4 +1,4 @@
-from FPSim2 import FPSim2Engine
+from FPSim2 import FPSim2CudaEngine
 import os
 import wget
 import sqlite3
@@ -20,13 +20,19 @@ if not os.path.exists('data/chembl.h5'):
     url = 'https://ftp.ebi.ac.uk/pub/databases/chembl/ChEMBLdb/latest/chembl_34.h5'
     wget.download(url, out='data/chembl.h5')
     
-engine = FPSim2Engine(
+engine = FPSim2CudaEngine(
     "data/chembl.h5",
 )
 
 def get_similar_compounds(canonical_smiles, engine):
-    fps = engine.similarity(canonical_smiles, 0.7, n_workers=1)
-    return fps
+    if pd.isna(canonical_smiles):
+        return []  # Return an empty list if SMILES is NaN or None
+    try:
+        fps = engine.similarity(canonical_smiles, 0.7, n_workers=1)
+        return fps
+    except Exception as e:
+        print(f"Error processing SMILES: {canonical_smiles}. Error: {str(e)}")
+        return []
 
 # Connect to the database
 conn = sqlite3.connect('data/chembl_34.db')
@@ -49,33 +55,35 @@ print(compound_records_df)
 # Create a dictionary to map molregno to chembl_id
 molregno_to_chembl = dict(zip(compound_records_df['molregno'], compound_records_df['chembl_id']))
 
-def process_compound(row, engine):
-    fps = get_similar_compounds(row['canonical_smiles'], engine)
-    similar_compounds = []
-    for similar_compound in fps:
-        similar_row = row.copy()
-        similar_molregno = similar_compound[0]
-        similar_row['similar_chembl_id'] = molregno_to_chembl.get(similar_molregno, f"Unknown_{similar_molregno}")
-        similar_row['similarity_score'] = similar_compound[1]
-        similar_compounds.append(similar_row)
-    return similar_compounds
-
-def process_batch(batch, engine):
+def process_batch(batch_data):
+    batch, engine, molregno_to_chembl = batch_data
+    
     results = []
-    for _, row in tqdm(batch.iterrows(), total=batch.shape[0]):
-        results.extend(process_compound(row, engine))
+    for _, row in batch.iterrows():
+        fps = get_similar_compounds(row['canonical_smiles'], engine)
+        for similar_compound in fps:
+            similar_row = row.copy()
+            similar_molregno = similar_compound[0]
+            similar_row['similar_chembl_id'] = molregno_to_chembl.get(similar_molregno, f"Unknown_{similar_molregno}")
+            similar_row['similarity_score'] = similar_compound[1]
+            results.append(similar_row)
+    
     return results
 
-def parallel_process_dataframe(df, n_processes=None, batch_size=1000):
+def parallel_process_dataframe(df, engine, molregno_to_chembl, n_processes=None, batch_size=1000):
     if n_processes is None:
         n_processes = cpu_count()
     
-    engine = FPSim2Engine("data/chembl.h5")
     batches = [df[i:i+batch_size] for i in range(0, len(df), batch_size)]
+    
+    batch_data = [
+        (batch, engine, molregno_to_chembl)
+        for batch in batches
+    ]
     
     with Pool(n_processes) as pool:
         results = list(tqdm(
-            pool.starmap(process_batch, [(batch, engine) for batch in batches]),
+            pool.imap(process_batch, batch_data),
             total=len(batches),
             desc="Processing batches",
             unit="batch"
@@ -86,7 +94,9 @@ def parallel_process_dataframe(df, n_processes=None, batch_size=1000):
 # Use the function
 similar_compounds = parallel_process_dataframe(
     compound_records_df,
-    n_processes=12,  # Adjust based on your CPU cores
+    engine,
+    molregno_to_chembl,
+    n_processes=6,  # Adjust based on your CPU cores
     batch_size=1000  # Adjust as needed
 )
 

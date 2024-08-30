@@ -211,21 +211,30 @@ def parallel_process_dataframe(fingerprints, valid_indices, model_path, threshol
 def process_batch_wrapper(args):
     return process_batch(*args)
 
-fingerprints, valid_indices = precompute_fingerprints(compound_records_df)
+if not os.path.exists('data/fingerprints_cache.pkl'):
+    fingerprints, valid_indices = precompute_fingerprints(compound_records_df)
+else:
+    with open('data/fingerprints_cache.pkl', 'rb') as f:
+        fingerprints, valid_indices = pickle.load(f)
 
-# Use the function
-model_path = "trained_models/chembl_34_model/chembl_34_multitask.onnx"
-expanded_df = parallel_process_dataframe(
-    fingerprints,
-    valid_indices,
-    model_path,
-    threshold=0.75, 
-    n_processes=48,  # Adjust based on your CPU cores
-    batch_size=2000  # Adjust based on your GPU memory
-)
+if not os.path.exists('data/expanded_df.csv'):
+    # Use the function
+    model_path = "trained_models/chembl_34_model/chembl_34_multitask.onnx"
+    expanded_df = parallel_process_dataframe(
+        fingerprints,
+        valid_indices,
+        model_path,
+        threshold=0.75, 
+        n_processes=48,  # Adjust based on your CPU cores
+        batch_size=2000  # Adjust based on your GPU memory
+        )
+    print(expanded_df)
+
+    # Save the expanded dataframe to a CSV file
+    expanded_df.to_csv('data/expanded_df.csv', index=False)
+else:
+    expanded_df = pd.read_csv('data/expanded_df.csv')
+
 print(expanded_df)
-
-# Save the expanded dataframe to a CSV file
-expanded_df.to_csv('data/expanded_df.csv', index=False)
 
 
