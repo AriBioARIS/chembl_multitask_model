@@ -29,7 +29,7 @@ def get_similar_compounds(canonical_smiles, engine):
     if pd.isna(canonical_smiles):
         return []  # Return an empty list if SMILES is NaN or None
     try:
-        fps = engine.similarity(canonical_smiles, 0.7, n_workers=1)
+        fps = engine.similarity(canonical_smiles, 0.7)
         return fps
     except Exception as e:
         print(f"Error processing SMILES: {canonical_smiles}. Error: {str(e)}")
