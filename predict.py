@@ -123,7 +123,7 @@ expanded_df = parallel_process_dataframe(
     compound_records_df, 
     model_path,
     threshold=0.75, 
-    n_processes=10
+    n_processes=48
 )
 print(expanded_df)
 
